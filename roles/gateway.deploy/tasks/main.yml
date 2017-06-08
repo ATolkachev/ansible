@@ -1,0 +1,53 @@
+- name: Install iptables
+  yum: pkg=iptables-services state=present
+
+- name: Enable iptables
+  service: name=iptables state=started enabled=yes
+
+- name: get facts for ip address
+  get_ip_facts: ip={{ hostvars[inventory_hostname]['ansible_host'] }}
+  register: ip_facts
+
+- name: Check if port 1194 is allowed
+  shell: iptables-save | grep -q "INPUT -p udp -m udp --dport 1194" && echo -n yes || echo -n no
+  register: check_allow_vpn
+  changed_when: no
+  always_run: yes
+
+- name: Allow port 1194
+  command: >
+    iptables -A INPUT -p udp -m udp --dport 1194 -m comment --comment "Allow VPN" -j ACCEPT
+  when: check_allow_vpn.stdout == "no"
+  notify:
+  - Save iptables
+
+- name: Check nat
+  shell: iptables-save | grep -q "POSTROUTING -s {{ ip_facts.network_priv }} -o {{ ip_facts.ifname_pub }} -j MASQUERADE" && echo -n yes || echo -n no
+  register: check_enabled_nat
+  changed_when: no
+  always_run: yes
+
+- name: Enable nat
+  shell: iptables -t nat -A POSTROUTING -s {{ ip_facts.network_priv }} -o {{ ip_facts.ifname_pub }} -j MASQUERADE
+  when: check_enabled_nat.stdout == "no"
+  notify:
+  - Save iptables
+
+- name: Check disabled forwarding
+  shell: iptables-save | grep -q "FORWARD -j REJECT --reject-with icmp-host-prohibited" && echo -n yes || echo -n no
+  register: check_enabled_forwarding
+  changed_when: no
+  always_run: yes
+
+- name: Enable nat
+  shell: iptables -t filter -D FORWARD -j REJECT --reject-with icmp-host-prohibited
+  when: check_enabled_nat.stdout == "no"
+  notify:
+  - Save iptables
+
+- sysctl:
+    name: net.ipv4.ip_forward
+    value: 1
+    sysctl_set: yes
+    state: present
+    reload: yes
